@@ -221,6 +221,8 @@ fn test_lock_recovery_after_failure() {
     // But since `perform_remittance_flow` is called within the orchestrator, a panic there
     // will roll back the `EXEC_LOCK` set by the orchestrator.
     assert_eq!(client.get_execution_state(), false);
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
