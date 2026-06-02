@@ -2609,3 +2609,22 @@ fn test_disabled_rollover_only_checks_single_tx_limits() {
     let result = client.try_withdraw(&member, &token_contract.address(), &recipient, &500_0000000);
     assert!(result.is_err());
 }
+
+
+#[test]
+fn test_precision_spending_overflow_graceful() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, FamilyWallet);
+    let client = FamilyWalletClient::new(&env, &contract_id);
+    
+    let admin = Address::generate(&env);
+    let member = Address::generate(&env);
+    let mut initial_members = Vec::new(&env);
+    initial_members.push_back(member.clone());
+    
+    client.init(&admin, &initial_members);
+    
+    // Assert that calling with near i128::MAX returns a graceful error or handles it cleanly
+    let result = client.try_validate_precision_spending(&member, &i128::MAX);
+    assert!(result.is_err());
+}
