@@ -124,7 +124,7 @@ mod mock_remittance_split {
 macro_rules! mock_savings {
     ($mod_name:ident, $struct_name:ident, $n:expr) => {
         mod $mod_name {
-            use reporting::{SavingsGoal, SavingsGoalsTrait};
+            use reporting::{GoalPage, SavingsGoal, SavingsGoalsTrait};
             use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Vec};
 
             #[contract]
@@ -145,9 +145,19 @@ macro_rules! mock_savings {
                             target_date: 1_800_000_000,
                             locked: false,
                             unlock_date: None,
+                            tags: Vec::new(&env),
                         });
                     }
                     goals
+                }
+
+                fn get_goals(env: Env, owner: Address, _cursor: u32, _limit: u32) -> GoalPage {
+                    let items = Self::get_all_goals(env, owner);
+                    GoalPage {
+                        count: items.len(),
+                        items,
+                        next_cursor: 0,
+                    }
                 }
 
                 fn is_goal_completed(_env: Env, _goal_id: u32) -> bool {
@@ -182,6 +192,7 @@ macro_rules! mock_bills {
                             id: i,
                             owner: owner.clone(),
                             name: SorobanString::from_str(&env, "Bench Bill"),
+                            external_ref: None,
                             amount: 100i128,
                             due_date: 1_800_000_000,
                             recurring: false,
@@ -190,6 +201,7 @@ macro_rules! mock_bills {
                             created_at: super::BILL_CREATED_AT,
                             paid_at: None,
                             schedule_id: None,
+                            tags: Vec::new(&env),
                             currency: SorobanString::from_str(&env, "USDC"),
                         });
                     }
@@ -218,6 +230,7 @@ macro_rules! mock_bills {
                             id: i,
                             owner: owner.clone(),
                             name: SorobanString::from_str(&env, "Bench Bill"),
+                            external_ref: None,
                             amount: 100i128,
                             due_date: 1_800_000_000,
                             recurring: false,
@@ -226,6 +239,7 @@ macro_rules! mock_bills {
                             created_at: super::BILL_CREATED_AT,
                             paid_at: if paid { Some(1_700_010_000) } else { None },
                             schedule_id: None,
+                            tags: Vec::new(&env),
                             currency: SorobanString::from_str(&env, "USDC"),
                         });
                     }
@@ -245,7 +259,7 @@ macro_rules! mock_bills {
 macro_rules! mock_insurance {
     ($mod_name:ident, $struct_name:ident, $n:expr) => {
         mod $mod_name {
-            use reporting::{InsurancePolicy, InsuranceTrait, PolicyPage};
+            use reporting::{CoverageType, InsurancePolicy, InsuranceTrait, PolicyPage};
             use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Vec};
 
             #[contract]
@@ -265,12 +279,12 @@ macro_rules! mock_insurance {
                             id: i,
                             owner: owner.clone(),
                             name: SorobanString::from_str(&env, "Bench Policy"),
-                            coverage_type: SorobanString::from_str(&env, "health"),
+                            coverage_type: remitwise_common::CoverageType::Health,
                             monthly_premium: 200i128,
                             coverage_amount: 50_000i128,
                             active: true,
                             next_payment_date: 1_800_000_000,
-                            schedule_id: None,
+                            external_ref: None,
                         });
                     }
                     let count = items.len();
@@ -534,7 +548,7 @@ fn bench_financial_health_report_small_5_items() {
     );
 
     let (cpu, mem, report) = measure(&env, || {
-        client.get_financial_health_report(&user, &500_000i128, &PERIOD_START, &PERIOD_END)
+        client.get_financial_health_report(&user, &user, &500_000i128, &PERIOD_START, &PERIOD_END)
     });
 
     assert!(report.health_score.score <= 100);
@@ -564,7 +578,7 @@ fn bench_financial_health_report_medium_25_items() {
     );
 
     let (cpu, mem, report) = measure(&env, || {
-        client.get_financial_health_report(&user, &500_000i128, &PERIOD_START, &PERIOD_END)
+        client.get_financial_health_report(&user, &user, &500_000i128, &PERIOD_START, &PERIOD_END)
     });
 
     assert!(report.health_score.score <= 100);
@@ -597,7 +611,7 @@ fn bench_financial_health_report_large_50_items() {
     );
 
     let (cpu, mem, report) = measure(&env, || {
-        client.get_financial_health_report(&user, &500_000i128, &PERIOD_START, &PERIOD_END)
+        client.get_financial_health_report(&user, &user, &500_000i128, &PERIOD_START, &PERIOD_END)
     });
 
     assert!(report.health_score.score <= 100);
@@ -647,8 +661,13 @@ fn store_n_reports(
     for i in 0u32..n {
         let user = Address::generate(env);
         let period_key = PERIOD_START + (i as u64) * 3_600;
-        let report =
-            client.get_financial_health_report(&user, &100_000i128, &PERIOD_START, &PERIOD_END);
+        let report = client.get_financial_health_report(
+            &user,
+            &user,
+            &100_000i128,
+            &PERIOD_START,
+            &PERIOD_END,
+        );
         client.store_report(&user, &report, &period_key);
     }
 

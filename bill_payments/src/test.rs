@@ -1,71 +1,59 @@
-    use testutils::{set_ledger_time, setup_test_env};
+use testutils::{set_ledger_time, setup_test_env};
 #[cfg(test)]
 mod testsuit {
-        proptest! {
-            #[test]
-            fn prop_overdue_bills_all_due_dates_less_than_now(
-                now in 1_000_000u64..10_000_000u64,
-                n_overdue in 1usize..10,
-                n_future in 0usize..10
-            ) {
-                let env = Env::default();
-                set_time(&env, now);
-                let contract_id = env.register_contract(None, BillPayments);
-                let client = BillPaymentsClient::new(&env, &contract_id);
-                let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+    proptest! {
+        #[test]
+        fn prop_overdue_bills_all_due_dates_less_than_now(
+            now in 1_000_000u64..10_000_000u64,
+            n_overdue in 1usize..10,
+            n_future in 0usize..10
+        ) {
+            let env = Env::default();
+            set_ledger_time(&env, now);
+            let contract_id = env.register_contract(None, BillPayments);
+            let client = BillPaymentsClient::new(&env, &contract_id);
+            let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+            env.mock_all_auths();
+
+            // Create overdue bills
+            for i in 0..n_overdue {
+                client.create_bill(
+                    &owner,
+                    &String::from_str(&env, &format!("Overdue{}", i)),
+                    &100,
+                    &(now - 1 - i as u64), // due_date < now
+                    &false,
+                    &0, &None, &None, &String::from_str(&env, "XLM"));
                 env.mock_all_auths();
-
-                // Create overdue bills
-                for i in 0..n_overdue {
-                    client.create_bill(
-                        &owner,
-                        &String::from_str(&env, &format!("Overdue{}", i)),
-                        &100,
-                        &(now - 1 - i as u64), // due_date < now
-                        &false,
-                        &0,
-                        &None,
-                        &String::from_str(&env, "XLM"),
-                    );
-                    env.mock_all_auths();
-                }
-
-                // Create future bills
-                for i in 0..n_future {
-                    client.create_bill(
-                        &owner,
-                        &String::from_str(&env, &format!("Future{}", i)),
-                        &100,
-                        &(now + 1 + i as u64), // due_date > now
-                        &false,
-                        &0,
-                        &None,
-                        &String::from_str(&env, "XLM"),
-                    );
-                    env.mock_all_auths();
-                }
-
-                let overdue = client.get_overdue_bills(&owner);
-                // All overdue bills should have due_date < now
-                for bill in overdue.iter() {
-                    assert!(bill.due_date < now, "Bill due_date {} not less than now {}", bill.due_date, now);
-                }
-                // The number of overdue bills should match n_overdue
-                assert_eq!(overdue.len(), n_overdue);
             }
+
+            // Create future bills
+            for i in 0..n_future {
+                client.create_bill(
+                    &owner,
+                    &String::from_str(&env, &format!("Future{}", i)),
+                    &100,
+                    &(now + 1 + i as u64), // due_date > now
+                    &false,
+                    &0, &None, &None, &String::from_str(&env, "XLM"));
+                env.mock_all_auths();
+            }
+
+            let overdue = client.get_overdue_bills(&owner, &0, &100);
+            // All overdue bills should have due_date < now
+            for bill in overdue.items.iter() {
+                assert!(bill.due_date < now, "Bill due_date {} not less than now {}", bill.due_date, now);
+            }
+            // The number of overdue bills should match n_overdue
+            assert_eq!(overdue.items.len(), n_overdue);
         }
+    }
     use crate::*;
+    use proptest::prelude::*;
     use soroban_sdk::testutils::{Address as AddressTrait, Ledger, LedgerInfo};
     use soroban_sdk::Env;
-    use proptest::prelude::*;
 
-    // Helper to set ledger time with a monotonically increasing sequence.
-    fn set_time(env: &Env, timestamp: u64) {
-        let next_seq = env.ledger().sequence().saturating_add(1);
-        set_ledger_time(env, next_seq, timestamp);
-    }
-
-    // Removed local set_time in favor of testutils::set_ledger_time
+    // Removed local set_ledger_time in favor of testutils::set_ledger_time
 
     #[test]
     fn test_create_bill_succeeds() {
@@ -256,8 +244,8 @@ mod testsuit {
         env.mock_all_auths();
         client.pay_bill(&owner, &1);
 
-        let unpaid = client.get_unpaid_bills(&owner);
-        assert_eq!(unpaid.len(), 2);
+        let unpaid = client.get_unpaid_bills(&owner, &0, &100);
+        assert_eq!(unpaid.items.len(), 2);
     }
 
     #[test]
@@ -384,8 +372,8 @@ mod testsuit {
             &String::from_str(&env, "XLM"),
         );
 
-        let overdue = client.get_overdue_bills(&owner);
-        assert_eq!(overdue.len(), 2); // Only first two are overdue
+        let overdue = client.get_overdue_bills(&owner, &0, &100);
+        assert_eq!(overdue.items.len(), 2); // Only first two are overdue
     }
 
     #[test]
@@ -435,6 +423,7 @@ mod testsuit {
             client.get_bill(&bill_id).is_none(),
             "cancelled bill should still return None"
         );
+
         env.mock_all_auths();
         client.cancel_bill(&owner, &bill_id);
         let bill = client.get_bill(&bill_id);
@@ -466,6 +455,10 @@ mod testsuit {
             client.get_bill(&bill_id).is_none(),
             "bill should be removed after owner cancellation"
         );
+        env.mock_all_auths();
+        client.cancel_bill(&owner, &bill_id);
+        let bill = client.get_bill(&bill_id);
+        assert!(bill.is_none());
     }
 
     #[test]
@@ -637,7 +630,7 @@ mod testsuit {
 
         // Admin can see all 3 bills
         let all = client.get_all_bills(&admin);
-        assert_eq!(all.len(), 3);
+        assert_eq!(all.items.len(), 3);
     }
     #[test]
     fn test_pay_bill_unauthorized() {
@@ -715,15 +708,15 @@ mod testsuit {
         );
 
         // Verify it shows up in overdue
-        let overdue = client.get_overdue_bills(&owner);
-        assert_eq!(overdue.len(), 1);
+        let overdue = client.get_overdue_bills(&owner, &0, &100);
+        assert_eq!(overdue.items.len(), 1);
 
         // Pay it
         client.pay_bill(&owner, &bill_id);
 
         // Verify it's no longer overdue (because it's paid)
-        let overdue_after = client.get_overdue_bills(&owner);
-        assert_eq!(overdue_after.len(), 0);
+        let overdue_after = client.get_overdue_bills(&owner, &0, &100);
+        assert_eq!(overdue_after.items.len(), 0);
     }
 
     #[test]
@@ -749,6 +742,75 @@ mod testsuit {
 
         let next_bill = client.get_bill(&2).unwrap();
         assert_eq!(next_bill.due_date, 1000000 + 86400); // Exactly 1 day later
+    }
+
+    #[test]
+    fn test_create_bill_invalid_due_dates() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        // due_date == 0 should be rejected
+        let res = client.try_create_bill(
+            &owner,
+            &String::from_str(&env, "Invalid"),
+            &100,
+            &0u64,
+            &false,
+            &0u32,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidDueDate)));
+
+        // due_date <= now should be rejected
+        set_ledger_time(&env, 1, 1_000_000);
+        env.mock_all_auths();
+        let res2 = client.try_create_bill(
+            &owner,
+            &String::from_str(&env, "Invalid"),
+            &100,
+            &1_000_000u64, // equal to now
+            &false,
+            &0u32,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+        assert_eq!(res2, Err(Ok(Error::InvalidDueDate)));
+    }
+
+    #[test]
+    fn test_recurring_generation_never_in_past() {
+        let env = Env::default();
+        // initial time
+        set_ledger_time(&env, 1, 1_000_000);
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        // create recurring bill due shortly after now
+        let bill_id = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Rent"),
+            &1000,
+            &(1_000_010u64),
+            &true,
+            &30u32,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+
+        // advance far into the future so next_due_date would otherwise be in the past
+        set_ledger_time(&env, 2, 2_000_000);
+        env.mock_all_auths();
+        client.pay_bill(&owner, &bill_id).unwrap();
+
+        // The next generated recurring bill (id 2) must have due_date > current time
+        let next_bill = client.get_bill(&2).unwrap();
+        assert!(next_bill.due_date > 2_000_000);
     }
 
     #[test]
@@ -780,9 +842,9 @@ mod testsuit {
             &String::from_str(&env, "XLM"),
         );
 
-        let bills = client.get_all_bills_for_owner(&owner);
-        assert_eq!(bills.len(), 2);
-        for bill in bills.iter() {
+        let bills = client.get_all_bills_for_owner(&owner, &0, &100);
+        assert_eq!(bills.items.len(), 2);
+        for bill in bills.items.iter() {
             assert_eq!(bill.owner, owner);
         }
     }
@@ -828,17 +890,17 @@ mod testsuit {
             &String::from_str(&env, "XLM"),
         );
 
-        let alice_bills = client.get_all_bills_for_owner(&alice);
-        let bob_bills = client.get_all_bills_for_owner(&bob);
+        let alice_bills = client.get_all_bills_for_owner(&alice, &0, &100);
+        let bob_bills = client.get_all_bills_for_owner(&bob, &0, &100);
 
         // Alice sees only her 2 bills
-        assert_eq!(alice_bills.len(), 2);
-        for bill in alice_bills.iter() {
+        assert_eq!(alice_bills.items.len(), 2);
+        for bill in alice_bills.items.iter() {
             assert_eq!(bill.owner, alice, "Alice received a bill she doesn't own");
         }
 
         // Bob sees only his 1 bill
-        assert_eq!(bob_bills.len(), 1);
+        assert_eq!(bob_bills.items.len(), 1);
         assert_eq!(bob_bills.get(0).unwrap().owner, bob);
     }
 
@@ -864,8 +926,8 @@ mod testsuit {
         );
 
         // Bob never created a bill
-        let bob_bills = client.get_all_bills_for_owner(&bob);
-        assert_eq!(bob_bills.len(), 0);
+        let bob_bills = client.get_all_bills_for_owner(&bob, &0, &100);
+        assert_eq!(bob_bills.items.len(), 0);
     }
 
     #[test]
@@ -889,8 +951,8 @@ mod testsuit {
         );
         client.pay_bill(&owner, &bill_id);
 
-        let bills = client.get_all_bills_for_owner(&owner);
-        assert_eq!(bills.len(), 1);
+        let bills = client.get_all_bills_for_owner(&owner, &0, &100);
+        assert_eq!(bills.items.len(), 1);
         assert!(bills.get(0).unwrap().paid);
     }
 
@@ -925,8 +987,8 @@ mod testsuit {
         );
         client.cancel_bill(&owner, &bill_id);
 
-        let bills = client.get_all_bills_for_owner(&owner);
-        assert_eq!(bills.len(), 1);
+        let bills = client.get_all_bills_for_owner(&owner, &0, &100);
+        assert_eq!(bills.items.len(), 1);
         assert_eq!(bills.get(0).unwrap().amount, 200);
     }
 
@@ -988,7 +1050,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -996,8 +1058,7 @@ mod testsuit {
             &1000,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
         assert_eq!(schedule_id, 1);
@@ -1018,7 +1079,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1026,8 +1087,7 @@ mod testsuit {
             &1000,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
         client.modify_schedule(&owner, &schedule_id, &4000, &172800);
@@ -1045,7 +1105,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1053,8 +1113,7 @@ mod testsuit {
             &1000,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
         client.cancel_schedule(&owner, &schedule_id);
@@ -1071,7 +1130,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1079,12 +1138,11 @@ mod testsuit {
             &1000,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &0);
 
-        set_time(&env, 3500);
+        set_ledger_time(&env, 3500);
         let executed = client.execute_due_schedules();
 
         assert_eq!(executed.len(), 1);
@@ -1102,7 +1160,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1110,12 +1168,11 @@ mod testsuit {
             &1000,
             &2000,
             &true,
-            &30,
-        );
+            &30, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
 
-        set_time(&env, 3500);
+        set_ledger_time(&env, 3500);
         client.execute_due_schedules();
 
         let schedule = client.get_schedule(&schedule_id).unwrap();
@@ -1131,7 +1188,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1139,12 +1196,11 @@ mod testsuit {
             &1000,
             &2000,
             &true,
-            &30,
-        );
+            &30, &None, &None, &String::from_str(&env, "XLM"));
 
         let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
 
-        set_time(&env, 3000 + 86400 * 3 + 100);
+        set_ledger_time(&env, 3000 + 86400 * 3 + 100);
         client.execute_due_schedules();
 
         let schedule = client.get_schedule(&schedule_id).unwrap();
@@ -1160,7 +1216,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 5000);
+        set_ledger_time(&env, 5000);
 
         let bill_id = client.create_bill(
             &owner,
@@ -1168,8 +1224,7 @@ mod testsuit {
             &1000,
             &6000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let result = client.try_create_schedule(&owner, &bill_id, &3000, &86400);
         assert!(result.is_err());
@@ -1183,7 +1238,7 @@ mod testsuit {
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
-        set_time(&env, 1000);
+        set_ledger_time(&env, 1000);
 
         let bill_id1 = client.create_bill(
             &owner,
@@ -1191,8 +1246,7 @@ mod testsuit {
             &1000,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         let bill_id2 = client.create_bill(
             &owner,
@@ -1200,8 +1254,7 @@ mod testsuit {
             &500,
             &2000,
             &false,
-            &0,
-        );
+            &0, &None, &None, &String::from_str(&env, "XLM"));
 
         client.create_schedule(&owner, &bill_id1, &3000, &86400);
         client.create_schedule(&owner, &bill_id2, &4000, &172800);
@@ -1448,7 +1501,7 @@ mod testsuit {
     #[test]
     fn test_get_overdue_bills_owner_scoped() {
         let env = Env::default();
-        set_time(&env, 2_000_000);
+        set_ledger_time(&env, 2_000_000);
 
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
@@ -1503,17 +1556,17 @@ mod testsuit {
             &String::from_str(&env, "XLM"),
         );
 
-        let alice_overdue = client.get_overdue_bills(&alice);
-        let bob_overdue = client.get_overdue_bills(&bob);
+        let alice_overdue = client.get_overdue_bills(&alice, &0, &100);
+        let bob_overdue = client.get_overdue_bills(&bob, &0, &100);
 
         // Alice sees only her 2 overdue bills, not Bob's
-        assert_eq!(alice_overdue.len(), 2);
-        for bill in alice_overdue.iter() {
+        assert_eq!(alice_overdue.items.len(), 2);
+        for bill in alice_overdue.items.iter() {
             assert_eq!(bill.owner, alice);
         }
 
         // Bob sees only his 1 overdue bill, not Alice's
-        assert_eq!(bob_overdue.len(), 1);
+        assert_eq!(bob_overdue.items.len(), 1);
         assert_eq!(bob_overdue.get(0).unwrap().owner, bob);
     }
 
@@ -1536,6 +1589,9 @@ mod testsuit {
             &1000000,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
     }
 
@@ -1573,6 +1629,9 @@ mod testsuit {
             &1000000,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
 
         // other tries to pay the bill for owner
@@ -1613,6 +1672,9 @@ mod testsuit {
             &1000000,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
 
         // other tries to cancel the bill for owner
@@ -1751,7 +1813,7 @@ mod testsuit {
     //     let env = Env::default();
 
     //     // FORCE reset to a very small number first
-    //     env.ledger().set_timestamp(100);
+    //     env.ledger().set_ledger_timestamp(100);
 
     //     let contract_id = env.register_contract(None, BillPayments);
     //     let client = BillPaymentsClient::new(&env, &contract_id);
@@ -1771,7 +1833,7 @@ mod testsuit {
     //     );
 
     //     // Warp to late payment time
-    //     env.ledger().set_timestamp(1_000_500);
+    //     env.ledger().set_ledger_timestamp(1_000_500);
     //     client.pay_bill(&owner, &bill_id);
 
     //     let next_bill = client.get_bill(&2).unwrap();
@@ -1779,7 +1841,6 @@ mod testsuit {
     //     assert_eq!(next_bill.due_date, expected_due_date);
     // }
 
-    
     #[test]
     fn test_recurring_date_math_multiple_pay_cycles_3rd_bill() {
         // Test: Multiple pay cycles - verify 3rd bill's due date advances correctly
@@ -1836,7 +1897,7 @@ mod testsuit {
         // Bill 1: due_date=1000000, paid at time=500000 (paid 500000 seconds early)
         // Bill 2: due_date should still be 1000000 + (30*86400)
         let env = Env::default();
-        set_time(&env, 500_000); // Set time BEFORE due date
+        set_ledger_time(&env, 500_000); // Set time BEFORE due date
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
@@ -2076,7 +2137,7 @@ mod testsuit {
     fn test_time_drift_bill_not_overdue_at_exact_due_date() {
         let due_date = 1_000_000u64;
         let env = Env::default();
-        set_time(&env, due_date);
+        set_ledger_time(&env, due_date);
 
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
@@ -2090,9 +2151,12 @@ mod testsuit {
             &due_date,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
 
-        let page = client.get_overdue_bills(&0, &100);
+        let page = client.get_overdue_bills(&owner, &0, &100);
         assert_eq!(
             page.count, 0,
             "Bill must not appear overdue when current_time == due_date"
@@ -2104,7 +2168,7 @@ mod testsuit {
     fn test_time_drift_bill_overdue_one_second_after_due_date() {
         let due_date = 1_000_000u64;
         let env = Env::default();
-        set_time(&env, due_date);
+        set_ledger_time(&env, due_date);
 
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
@@ -2118,14 +2182,17 @@ mod testsuit {
             &due_date,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
 
         // Not yet overdue at due_date
-        let page = client.get_overdue_bills(&0, &100);
+        let page = client.get_overdue_bills(&owner, &0, &100);
         assert_eq!(page.count, 0);
 
         // Advance one second past due_date
-        set_time(&env, due_date + 1);
+        set_ledger_time(&env, due_date + 1);
         let page = client.get_overdue_bills(&0, &100);
         assert_eq!(
             page.count, 1,
@@ -2144,7 +2211,7 @@ mod testsuit {
 
     //     // 1. Set time to a starting point
     //     let start_time = 2_000_000u64;
-    //     env.ledger().set_timestamp(start_time);
+    //     env.ledger().set_ledger_timestamp(start_time);
 
     //     // 2. Create bills with relative due dates
     //     // All these due dates are >= current_time (2,000,000), so validation passes.
@@ -2187,9 +2254,9 @@ mod testsuit {
     //     // - Bill 1 (2000001) is < 2000005 (OVERDUE)
     //     // - Bill 2 (2000005) is == 2000005 (NOT OVERDUE)
     //     // - Bill 3 (2000010) is > 2000005 (NOT OVERDUE)
-    //     env.ledger().set_timestamp(2000005);
+    //     env.ledger().set_ledger_timestamp(2000005);
 
-    //     let page = client.get_overdue_bills(&0, &100);
+    //     let page = client.get_overdue_bills(&owner, &0, &100);
 
     //     assert_eq!(
     //         page.count, 1,
@@ -2208,7 +2275,7 @@ mod testsuit {
         let day = 86400u64;
         let due_date = 1_000_000u64;
         let env = Env::default();
-        set_time(&env, due_date);
+        set_ledger_time(&env, due_date);
 
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
@@ -2222,14 +2289,17 @@ mod testsuit {
             &due_date,
             &false,
             &0,
+            &None,
+            &None,
+            &String::from_str(&env, "XLM"),
         );
 
         // Still not overdue at due_date
-        let page = client.get_overdue_bills(&0, &100);
+        let page = client.get_overdue_bills(&owner, &0, &100);
         assert_eq!(page.count, 0);
 
         // One full day later – must be overdue
-        set_time(&env, due_date + day);
+        set_ledger_time(&env, due_date + day);
         let page = client.get_overdue_bills(&0, &100);
         assert_eq!(
             page.count, 1,
@@ -2782,117 +2852,156 @@ mod testsuit {
         );
     }
 
-    #[test]
-    fn test_batch_pay_bills_mixed_success() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-        let other = <soroban_sdk::Address as AddressTrait>::generate(&env);
+    // --- batch_pay_bills: Partial Failure (Skip-and-Continue) ---
 
+    #[test]
+    fn test_batch_pay_bills_partial_success() {
+        let env = Env::default();
+        let cid = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &cid);
+        let owner = Address::generate(&env);
         env.mock_all_auths();
-        
-        // 1. Valid bill
+
+        // 1. Create 3 bills
+        let name = String::from_str(&env, "B");
         let id1 = client.create_bill(
             &owner,
-            &String::from_str(&env, "Valid"),
-            &1000,
+            &name,
+            &100,
             &1000000,
             &false,
             &0,
-            &String::from_str(&env, "XLM"),
             &None,
             &String::from_str(&env, "XLM"),
         );
-
-        // 2. Already paid bill (we'll pay it first)
         let id2 = client.create_bill(
             &owner,
-            &String::from_str(&env, "AlreadyPaid"),
-            &2000,
+            &name,
+            &200,
             &1000000,
             &false,
             &0,
-            &String::from_str(&env, "XLM"),
             &None,
             &String::from_str(&env, "XLM"),
         );
-        client.pay_bill(&owner, &id2);
-
-        // 3. Unauthorized bill (different owner)
-        env.mock_all_auths();
         let id3 = client.create_bill(
-            &other,
-            &String::from_str(&env, "OtherOwner"),
-            &3000,
-            &1000000,
-            &false,
-            &0,
-            &String::from_str(&env, "XLM"),
-            &None,
-            &String::from_str(&env, "XLM"),
-        );
-
-        // 4. Non-existent bill ID (e.g., 999)
-
-        env.mock_all_auths();
-        let bill_ids = Vec::from_array(&env, [id1, id2, id3, 999]);
-        
-        // Should succeed and return 1 (only id1 is valid for caller 'owner')
-        let success_count = client.batch_pay_bills(&owner, &bill_ids);
-        assert_eq!(success_count, 1);
-
-        // Verify id1 is paid
-        let bill1 = client.get_bill(&id1).unwrap();
-        assert!(bill1.paid);
-        
-        // Verify id2 remains paid (as it was)
-        let bill2 = client.get_bill(&id2).unwrap();
-        assert!(bill2.paid);
-    }
-
-    #[test]
-    fn test_batch_pay_bills_all_invalid() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-        let bill_ids = Vec::from_array(&env, [888, 999]);
-        
-        let success_count = client.batch_pay_bills(&owner, &bill_ids);
-        assert_eq!(success_count, 0);
-    }
-
-    #[test]
-    fn test_batch_pay_bills_duplicate_ids() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-        let id = client.create_bill(
             &owner,
-            &String::from_str(&env, "DuplicateTest"),
-            &1000,
+            &name,
+            &300,
             &1000000,
             &false,
             &0,
-            &String::from_str(&env, "XLM"),
             &None,
             &String::from_str(&env, "XLM"),
         );
 
-        // Pass the same ID twice
-        let bill_ids = Vec::from_array(&env, [id, id]);
-        
-        // First one succeeds, second one fails (already paid by the first)
-        let success_count = client.batch_pay_bills(&owner, &bill_ids);
+        // 2. Pre-pay ID1 so it is "already paid" when batch starts
+        client.pay_bill(&owner, &id1);
+
+        // 3. Batch contains: ID1 (already paid), ID2 (valid), 999 (non-existent), ID3 (valid)
+        let mut ids = Vec::new(&env);
+        ids.push_back(id1);
+        ids.push_back(id2);
+        ids.push_back(999);
+        ids.push_back(id3);
+
+        let success_count = client.batch_pay_bills(&owner, &ids);
+
+        // Expected: only ID2 and ID3 were paid. ID1 was skipped (already paid), 999 was skipped (not found).
+        assert_eq!(success_count, 2);
+
+        // Verify states
+        assert!(client.get_bill(&id1).unwrap().paid);
+        assert!(client.get_bill(&id2).unwrap().paid);
+        assert!(client.get_bill(&id3).unwrap().paid);
+    }
+
+    #[test]
+    fn test_batch_pay_bills_skips_unauthorized() {
+        let env = Env::default();
+        let cid = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &cid);
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "Test");
+        let a1 = client.create_bill(
+            &alice,
+            &name,
+            &100,
+            &1000000,
+            &false,
+            &0,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+        let b1 = client.create_bill(
+            &bob,
+            &name,
+            &200,
+            &1000000,
+            &false,
+            &0,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+        let a2 = client.create_bill(
+            &alice,
+            &name,
+            &300,
+            &1000000,
+            &false,
+            &0,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+
+        let mut ids = Vec::new(&env);
+        ids.push_back(a1);
+        ids.push_back(b1); // Bob's bill
+        ids.push_back(a2);
+
+        // Alice tries to pay the batch
+        let success_count = client.batch_pay_bills(&alice, &ids);
+
+        // Expected: only A1 and A2 paid. B1 skipped.
+        assert_eq!(success_count, 2);
+        assert!(client.get_bill(&a1).unwrap().paid);
+        assert!(!client.get_bill(&b1).unwrap().paid);
+        assert!(client.get_bill(&a2).unwrap().paid);
+    }
+
+    #[test]
+    fn test_batch_pay_bills_recurring_atomicity() {
+        let env = Env::default();
+        let cid = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "R");
+        let id1 = client.create_bill(
+            &owner,
+            &name,
+            &100,
+            &1000000,
+            &true,
+            &30,
+            &None,
+            &String::from_str(&env, "XLM"),
+        );
+
+        let mut ids = Vec::new(&env);
+        ids.push_back(id1);
+
+        let success_count = client.batch_pay_bills(&owner, &ids);
         assert_eq!(success_count, 1);
 
-        let bill = client.get_bill(&id).unwrap();
-        assert!(bill.paid);
+        // Verify next bill was created atomically
+        let next_bill = client.get_bill(&2).unwrap();
+        assert_eq!(next_bill.owner, owner);
+        assert_eq!(next_bill.amount, 100);
+        assert!(!next_bill.paid);
     }
 }
