@@ -75,6 +75,7 @@ pub mod pause_functions {
     pub const CREATE_SCHED: Symbol = symbol_short!("crt_sch");
     pub const MODIFY_SCHED: Symbol = symbol_short!("mod_sch");
     pub const CANCEL_SCHED: Symbol = symbol_short!("can_sch");
+    pub const SET_EXT_REF: Symbol = symbol_short!("set_ext");
 }
 
 /// Insurance policy data structure with owner tracking for access control
@@ -315,6 +316,7 @@ impl Insurance {
             pause_functions::CREATE_SCHED,
             pause_functions::MODIFY_SCHED,
             pause_functions::CANCEL_SCHED,
+            pause_functions::SET_EXT_REF,
         ] {
             let _ = Self::pause_function(env.clone(), caller.clone(), func);
         }
@@ -351,6 +353,9 @@ impl Insurance {
             .instance()
             .set(&symbol_short!("UPG_ADM"), &new_admin);
         Ok(())
+    }
+    pub fn get_upgrade_admin_public(env: Env) -> Option<Address> {
+        Self::get_upgrade_admin(&env)
     }
     pub fn set_version(env: Env, caller: Address, new_version: u32) -> Result<(), InsuranceError> {
         caller.require_auth();
@@ -893,6 +898,7 @@ impl Insurance {
         external_ref: Option<String>,
     ) -> Result<bool, InsuranceError> {
         caller.require_auth();
+        Self::require_not_paused(&env, pause_functions::SET_EXT_REF)?;
 
         Self::extend_instance_ttl(&env);
         let mut policies: Map<u32, InsurancePolicy> = env
