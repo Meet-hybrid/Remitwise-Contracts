@@ -61,11 +61,11 @@ fn init_orchestrator(env: &Env, client: &OrchestratorClient, owner: &Address) {
     client.init(owner, &fw, &rs, &sg, &bp, &ins);
 }
 
-/// Execute one remittance flow entry so the audit log grows by one.
+/// Execute one unsigned remittance flow entry so the audit log grows by one.
+///
+/// Note: this helper uses the *unsigned* execution path and therefore does not
+/// update `ExecutionStats` (which are updated in the signed path).
 fn do_flow(env: &Env, client: &OrchestratorClient, executor: &Address, _nonce: u64) {
-    // Reuse a single mock contract registered once per env (stored via a stable address).
-    // We register it fresh here but the env caches it; the key insight is we must NOT
-    // register a new contract on every call as that exhausts the budget.
     let mock_id = env.register_contract(None, MockContract);
     env.budget().reset_unlimited();
         client.execute_remittance_flow(&RemittanceFlowParams {
@@ -84,6 +84,7 @@ fn do_flow(env: &Env, client: &OrchestratorClient, executor: &Address, _nonce: u
 
 /// Mirror of `Orchestrator::compute_request_hash` for test use.
 fn compute_test_hash(
+
     _env: &Env,
     operation: Symbol,
     nonce: u64,
