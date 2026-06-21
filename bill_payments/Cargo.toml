@@ -26,3 +26,7 @@ path = "tests/test_recurring_lifecycle.rs"
 [[test]]
 name = "tests_overdue"
 path = "tests/tests_overdue.rs"
+
+[[test]]
+name = "unpaid_by_currency_pagination"
+path = "tests/unpaid_by_currency_pagination.rs"
